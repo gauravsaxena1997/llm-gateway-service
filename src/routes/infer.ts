@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
-import { inferWithCerebras } from '../providers/cerebras.js'
+import { CerebrasProviderError, inferWithCerebras } from '../providers/cerebras.js'
 import { env } from '../config/env.js'
 
 const messageSchema = z.object({
@@ -66,7 +66,16 @@ inferRouter.post('/infer', authMiddleware, async (req, res) => {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
-    const status = message.includes('HTTP 429') ? 429 : message.includes('HTTP 5') ? 502 : 500
+    const status =
+      error instanceof CerebrasProviderError
+        ? error.status
+        : message.includes('HTTP 429')
+          ? 429
+          : message.includes('HTTP 5')
+            ? 502
+            : 500
+    const retryable =
+      error instanceof CerebrasProviderError ? error.retryable : status === 429 || status >= 500
 
     return res.status(status).json({
       success: false,
@@ -74,7 +83,7 @@ inferRouter.post('/infer', authMiddleware, async (req, res) => {
       error: {
         code: 'PROVIDER_ERROR',
         message,
-        retryable: status >= 500,
+        retryable,
       },
     })
   }
