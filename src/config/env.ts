@@ -62,6 +62,6 @@ export const env = {
   requestTimeoutMs: 30000,
   providerDefault: 'cerebras',
   cerebrasBaseUrl: 'https://api.cerebras.ai/v1',
-  cerebrasModel: 'llama3.1-8b',
+  cerebrasModel: process.env.CEREBRAS_MODEL || 'zai-glm-4.7',
   cerebrasApiKeys: apiKeys,
 } as const
