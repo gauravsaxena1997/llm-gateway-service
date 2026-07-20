@@ -59,10 +59,6 @@ const ollamaApiKeys = (process.env.OLLAMA_API_KEYS || '')
   .map((key) => key.trim())
   .filter(Boolean)
 
-if (ollamaApiKeys.length === 0) {
-  throw new Error('Missing OLLAMA_API_KEYS')
-}
-
 const ollamaAllowedModels = (process.env.OLLAMA_ALLOWED_MODELS || 'gemma4:31b')
   .split(',')
   .map((model) => model.trim())
@@ -74,6 +70,7 @@ export const env = {
   clients: parseClientsFromEnv(),
   clockSkewMs: 300000,
   requestTimeoutMs: 30000,
+  visionRequestTimeoutMs: Number(process.env.OLLAMA_VISION_REQUEST_TIMEOUT_MS || 90000),
   providerDefault: 'cerebras',
   cerebrasBaseUrl: 'https://api.cerebras.ai/v1',
   cerebrasModel: process.env.CEREBRAS_MODEL || 'gpt-oss-120b',
@@ -82,4 +79,6 @@ export const env = {
   ollamaModel: process.env.OLLAMA_MODEL || 'gemma4:31b',
   ollamaAllowedModels,
   ollamaApiKeys,
+  localOllamaBaseUrl: process.env.LOCAL_OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
+  localOllamaEmbeddingModel: process.env.LOCAL_OLLAMA_EMBEDDING_MODEL || 'embeddinggemma:300m-qat-q8_0',
 } as const

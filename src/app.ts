@@ -2,6 +2,7 @@ import express from 'express'
 import { logger } from './logger.js'
 import { requestIdMiddleware } from './middleware/request-id.js'
 import { healthRouter } from './routes/health.js'
+import { embedRouter } from './routes/embed.js'
 import { inferRouter } from './routes/infer.js'
 
 export function createApp() {
@@ -37,6 +38,7 @@ export function createApp() {
 
   app.use('/health', healthRouter)
   app.use('/v1', inferRouter)
+  app.use('/v1', embedRouter)
 
   app.use((_req, res) => {
     res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Route not found' } })

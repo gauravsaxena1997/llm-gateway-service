@@ -45,3 +45,14 @@ export interface InferResponse {
   toolCalls: LLMToolCall[]
   usage?: InferUsage
 }
+
+export interface EmbedRequestBody {
+  appId?: string
+  model?: string
+  input: string[]
+}
+
+export interface EmbedResponse {
+  embeddings: number[][]
+  dimensions: number
+}

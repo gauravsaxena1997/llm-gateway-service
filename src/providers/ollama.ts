@@ -1,8 +1,10 @@
 import { env } from '../config/env.js'
 import { logger } from '../logger.js'
-import type { InferRequestBody, InferResponse } from '../types.js'
+import type { EmbedRequestBody, EmbedResponse, InferRequestBody, InferResponse } from '../types.js'
 
 let currentKeyIndex = 0
+const keyCooldownUntil = new Map<number, number>()
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 30_000
 
 interface SelectedKey {
   key: string
@@ -19,22 +21,50 @@ interface OllamaChatResponse {
   prompt_eval_count?: number
 }
 
+interface OllamaEmbedResponse {
+  embeddings?: unknown
+}
+
 export class OllamaProviderError extends Error {
   constructor(
     message: string,
     public readonly status: number,
-    public readonly retryable: boolean
+    public readonly retryable: boolean,
+    public readonly retryAfterMs?: number
   ) {
     super(message)
     this.name = 'OllamaProviderError'
   }
 }
 
-function nextKey(): SelectedKey {
-  const index = currentKeyIndex
-  const key = env.ollamaApiKeys[index]
-  currentKeyIndex = (currentKeyIndex + 1) % env.ollamaApiKeys.length
-  return { key, index }
+function nextAvailableKey(): SelectedKey | null {
+  const now = Date.now()
+  for (let offset = 0; offset < env.ollamaApiKeys.length; offset += 1) {
+    const index = (currentKeyIndex + offset) % env.ollamaApiKeys.length
+    const cooldownUntil = keyCooldownUntil.get(index) ?? 0
+    if (cooldownUntil <= now) {
+      currentKeyIndex = (index + 1) % env.ollamaApiKeys.length
+      return { key: env.ollamaApiKeys[index], index }
+    }
+  }
+  return null
+}
+
+function retryAfterMs(header: string | null): number {
+  if (!header) return DEFAULT_RATE_LIMIT_COOLDOWN_MS
+  const seconds = Number(header)
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1_000, 15 * 60_000)
+  const retryAt = Date.parse(header)
+  if (Number.isFinite(retryAt)) return Math.min(Math.max(retryAt - Date.now(), 1_000), 15 * 60_000)
+  return DEFAULT_RATE_LIMIT_COOLDOWN_MS
+}
+
+function allKeysCooldownDelayMs(): number {
+  const now = Date.now()
+  const delays = env.ollamaApiKeys
+    .map((_, index) => (keyCooldownUntil.get(index) ?? now) - now)
+    .filter((delay) => delay > 0)
+  return delays.length > 0 ? Math.min(...delays) : DEFAULT_RATE_LIMIT_COOLDOWN_MS
 }
 
 function timeoutSignal(timeoutMs: number): AbortSignal {
@@ -56,11 +86,22 @@ function resolveModel(requestedModel?: string): string {
 }
 
 export async function inferWithOllama(body: InferRequestBody): Promise<InferResponse> {
+  if (env.ollamaApiKeys.length === 0) {
+    throw new OllamaProviderError('Ollama Cloud is not configured', 503, false)
+  }
+
   let lastError: OllamaProviderError | null = null
   const model = resolveModel(body.model)
+  const requestTimeoutMs = body.messages.some((message) => message.images?.length)
+    ? env.visionRequestTimeoutMs
+    : env.requestTimeoutMs
 
   for (let attempt = 0; attempt < env.ollamaApiKeys.length; attempt += 1) {
-    const selectedKey = nextKey()
+    const selectedKey = nextAvailableKey()
+    if (!selectedKey) {
+      const delayMs = allKeysCooldownDelayMs()
+      throw new OllamaProviderError('All Ollama Cloud API keys are cooling down', 429, true, delayMs)
+    }
     logger.info({ attempt, keyIndex: selectedKey.index, model }, 'ollama_request_started')
 
     const response = await fetch(`${env.ollamaBaseUrl}/chat`, {
@@ -75,18 +116,23 @@ export async function inferWithOllama(body: InferRequestBody): Promise<InferResp
         options: { temperature: body.temperature ?? 0.2 },
         stream: false,
       }),
-      signal: timeoutSignal(env.requestTimeoutMs),
+      signal: timeoutSignal(requestTimeoutMs),
     })
 
     const payload = await response.json().catch(() => ({})) as OllamaChatResponse
     if (!response.ok) {
       const retryable = response.status === 429 || response.status >= 500
+      const delayMs = response.status === 429 ? retryAfterMs(response.headers.get('retry-after')) : undefined
+      if (response.status === 429 && delayMs) {
+        keyCooldownUntil.set(selectedKey.index, Date.now() + delayMs)
+      }
       lastError = new OllamaProviderError(
         `Ollama API error (HTTP ${response.status}): ${(payload.error || 'Unknown error').slice(0, 240)}`,
         response.status,
-        retryable
+        retryable,
+        delayMs
       )
-      logger.warn({ attempt, keyIndex: selectedKey.index, model, status: response.status, retryable }, 'ollama_request_failed')
+      logger.warn({ attempt, keyIndex: selectedKey.index, model, status: response.status, retryable, retryAfterMs: delayMs }, 'ollama_request_failed')
       if (retryable && attempt < env.ollamaApiKeys.length - 1) {
         await sleep(2_000 * (attempt + 1))
         continue
@@ -114,4 +160,49 @@ export async function inferWithOllama(body: InferRequestBody): Promise<InferResp
   }
 
   throw lastError ?? new OllamaProviderError('Ollama provider request failed', 500, true)
+}
+
+function parseEmbeddings(payload: OllamaEmbedResponse, expectedCount: number): EmbedResponse {
+  if (!Array.isArray(payload.embeddings) || payload.embeddings.length !== expectedCount) {
+    throw new OllamaProviderError('Local Ollama returned an invalid embeddings response', 502, true)
+  }
+
+  const embeddings = payload.embeddings.map((embedding) => {
+    if (!Array.isArray(embedding) || embedding.length === 0 || embedding.some((value) => typeof value !== 'number' || !Number.isFinite(value))) {
+      throw new OllamaProviderError('Local Ollama returned an invalid embedding vector', 502, true)
+    }
+    return embedding
+  })
+  const dimensions = embeddings[0].length
+  if (embeddings.some((embedding) => embedding.length !== dimensions)) {
+    throw new OllamaProviderError('Local Ollama returned embeddings with inconsistent dimensions', 502, true)
+  }
+
+  return { embeddings, dimensions }
+}
+
+export async function embedWithLocalOllama(body: EmbedRequestBody): Promise<EmbedResponse> {
+  const model = body.model || env.localOllamaEmbeddingModel
+  if (model !== env.localOllamaEmbeddingModel) {
+    throw new OllamaProviderError(`Local Ollama embedding model is not allowed: ${model}`, 400, false)
+  }
+
+  logger.info({ model, inputCount: body.input.length }, 'local_ollama_embedding_started')
+  const response = await fetch(`${env.localOllamaBaseUrl}/api/embed`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, input: body.input, keep_alive: '5m' }),
+    signal: timeoutSignal(env.requestTimeoutMs),
+  })
+  const payload = (await response.json().catch(() => ({}))) as OllamaEmbedResponse & { error?: string }
+  if (!response.ok) {
+    const retryable = response.status === 429 || response.status >= 500
+    throw new OllamaProviderError(
+      `Local Ollama API error (HTTP ${response.status}): ${(payload.error || 'Unknown error').slice(0, 240)}`,
+      response.status,
+      retryable
+    )
+  }
+
+  return parseEmbeddings(payload, body.input.length)
 }

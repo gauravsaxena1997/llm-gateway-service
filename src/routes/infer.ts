@@ -105,11 +105,12 @@ inferRouter.post('/infer', authMiddleware, async (req, res) => {
     return res.status(status).json({
       success: false,
       requestId: req.requestId,
-      error: {
-        code: 'PROVIDER_ERROR',
-        message,
-        retryable,
-      },
+        error: {
+          code: 'PROVIDER_ERROR',
+          message,
+          retryable,
+          retryAfterMs: error instanceof OllamaProviderError ? error.retryAfterMs : undefined,
+        },
     })
   }
 })
