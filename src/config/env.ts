@@ -54,6 +54,20 @@ if (apiKeys.length === 0) {
   throw new Error('Missing CEREBRAS_API_KEYS')
 }
 
+const ollamaApiKeys = (process.env.OLLAMA_API_KEYS || '')
+  .split(',')
+  .map((key) => key.trim())
+  .filter(Boolean)
+
+if (ollamaApiKeys.length === 0) {
+  throw new Error('Missing OLLAMA_API_KEYS')
+}
+
+const ollamaAllowedModels = (process.env.OLLAMA_ALLOWED_MODELS || 'gemma4:31b')
+  .split(',')
+  .map((model) => model.trim())
+  .filter(Boolean)
+
 export const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: Number(process.env.PORT || 4005),
@@ -64,4 +78,8 @@ export const env = {
   cerebrasBaseUrl: 'https://api.cerebras.ai/v1',
   cerebrasModel: process.env.CEREBRAS_MODEL || 'gpt-oss-120b',
   cerebrasApiKeys: apiKeys,
+  ollamaBaseUrl: 'https://ollama.com/api',
+  ollamaModel: process.env.OLLAMA_MODEL || 'gemma4:31b',
+  ollamaAllowedModels,
+  ollamaApiKeys,
 } as const

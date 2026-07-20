@@ -82,6 +82,8 @@ export async function inferWithCerebras(body: InferRequestBody): Promise<InferRe
         max_completion_tokens: body.maxTokens ?? 1024,
         temperature: body.temperature ?? 0.3,
         stream: false,
+        ...(body.tools && body.tools.length > 0 ? { tools: body.tools } : {}),
+        ...(body.responseFormat ? { response_format: body.responseFormat } : {}),
         ...reasoningParams(model),
       }),
       signal: timeoutSignal(env.requestTimeoutMs),
@@ -119,8 +121,15 @@ export async function inferWithCerebras(body: InferRequestBody): Promise<InferRe
     const data = await response.json()
     const firstChoice = data?.choices?.[0]
     const choice = firstChoice?.message?.content
+    const toolCalls = Array.isArray(firstChoice?.message?.tool_calls)
+      ? firstChoice.message.tool_calls.filter((toolCall: unknown): toolCall is { id: string; function: { name: string; arguments: string } } => {
+        if (!toolCall || typeof toolCall !== 'object') return false
+        const value = toolCall as { id?: unknown; function?: { name?: unknown; arguments?: unknown } }
+        return typeof value.id === 'string' && typeof value.function?.name === 'string' && typeof value.function?.arguments === 'string'
+      })
+      : []
 
-    if (!choice || typeof choice !== 'string') {
+    if ((!choice || typeof choice !== 'string') && toolCalls.length === 0) {
       logger.warn(
         {
           attempt,
@@ -147,7 +156,8 @@ export async function inferWithCerebras(body: InferRequestBody): Promise<InferRe
     }
 
     return {
-      content: choice,
+      content: typeof choice === 'string' ? choice : '',
+      toolCalls,
       usage: data?.usage
         ? {
             promptTokens: data.usage.prompt_tokens ?? 0,
