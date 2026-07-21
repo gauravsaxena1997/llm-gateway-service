@@ -5,6 +5,7 @@ import type { EmbedRequestBody, EmbedResponse, InferRequestBody, InferResponse }
 let currentKeyIndex = 0
 const keyCooldownUntil = new Map<number, number>()
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 30_000
+const INVALID_KEY_COOLDOWN_MS = 15 * 60_000
 
 interface SelectedKey {
   key: string
@@ -66,6 +67,22 @@ function allKeysCooldownDelayMs(): number {
     .map((_, index) => (keyCooldownUntil.get(index) ?? now) - now)
     .filter((delay) => delay > 0)
   return delays.length > 0 ? Math.min(...delays) : DEFAULT_RATE_LIMIT_COOLDOWN_MS
+}
+
+function shouldTryAnotherKey(status: number): boolean {
+  return status === 401 || status === 403 || status === 429 || status >= 500
+}
+
+function applyKeyCooldown(status: number, index: number, retryAfterHeader: string | null): number | undefined {
+  if (status === 429) {
+    const delayMs = retryAfterMs(retryAfterHeader)
+    keyCooldownUntil.set(index, Date.now() + delayMs)
+    return delayMs
+  }
+  if (status === 401 || status === 403) {
+    keyCooldownUntil.set(index, Date.now() + INVALID_KEY_COOLDOWN_MS)
+  }
+  return undefined
 }
 
 function timeoutSignal(timeoutMs: number): AbortSignal {
@@ -130,11 +147,9 @@ export async function inferWithOllama(body: InferRequestBody): Promise<InferResp
 
     const payload = await response.json().catch(() => ({})) as OllamaChatResponse
     if (!response.ok) {
+      const retryWithAnotherKey = shouldTryAnotherKey(response.status)
       const retryable = response.status === 429 || response.status >= 500
-      const delayMs = response.status === 429 ? retryAfterMs(response.headers.get('retry-after')) : undefined
-      if (response.status === 429 && delayMs) {
-        keyCooldownUntil.set(selectedKey.index, Date.now() + delayMs)
-      }
+      const delayMs = applyKeyCooldown(response.status, selectedKey.index, response.headers.get('retry-after'))
       lastError = new OllamaProviderError(
         `Ollama API error (HTTP ${response.status}): ${(payload.error || 'Unknown error').slice(0, 240)}`,
         response.status,
@@ -142,7 +157,7 @@ export async function inferWithOllama(body: InferRequestBody): Promise<InferResp
         delayMs
       )
       logger.warn({ attempt, keyIndex: selectedKey.index, model, status: response.status, retryable, retryAfterMs: delayMs }, 'ollama_request_failed')
-      if (retryable && attempt < env.ollamaApiKeys.length - 1) {
+      if (retryWithAnotherKey && attempt < env.ollamaApiKeys.length - 1) {
         await sleep(2_000 * (attempt + 1))
         continue
       }
@@ -221,11 +236,9 @@ export async function embedWithOllamaCloud(body: EmbedRequestBody): Promise<Embe
         return parseEmbeddings(payload, body.input.length)
       }
 
+      const retryWithAnotherKey = shouldTryAnotherKey(response.status)
       const retryable = response.status === 429 || response.status >= 500
-      const delayMs = response.status === 429 ? retryAfterMs(response.headers.get('retry-after')) : undefined
-      if (response.status === 429 && delayMs) {
-        keyCooldownUntil.set(selectedKey.index, Date.now() + delayMs)
-      }
+      const delayMs = applyKeyCooldown(response.status, selectedKey.index, response.headers.get('retry-after'))
       lastError = new OllamaProviderError(
         `Ollama Cloud embedding API error (HTTP ${response.status}): ${(payload.error || 'Unknown error').slice(0, 240)}`,
         response.status,
@@ -240,7 +253,7 @@ export async function embedWithOllamaCloud(body: EmbedRequestBody): Promise<Embe
       logger.warn({ attempt, keyIndex: selectedKey.index, model, error: message }, 'ollama_embedding_transport_failed')
     }
 
-    if (lastError.retryable && attempt < env.ollamaApiKeys.length - 1) {
+    if (shouldTryAnotherKey(lastError.status) && attempt < env.ollamaApiKeys.length - 1) {
       await sleep(2_000 * (attempt + 1))
       continue
     }
