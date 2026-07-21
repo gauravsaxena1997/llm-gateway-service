@@ -4,6 +4,7 @@ import type { EmbedRequestBody, EmbedResponse, InferRequestBody, InferResponse }
 
 let currentKeyIndex = 0
 const keyCooldownUntil = new Map<number, number>()
+const rejectedKeyUntil = new Map<number, number>()
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 30_000
 const INVALID_KEY_COOLDOWN_MS = 15 * 60_000
 
@@ -43,13 +44,18 @@ function nextAvailableKey(): SelectedKey | null {
   const now = Date.now()
   for (let offset = 0; offset < env.ollamaApiKeys.length; offset += 1) {
     const index = (currentKeyIndex + offset) % env.ollamaApiKeys.length
-    const cooldownUntil = keyCooldownUntil.get(index) ?? 0
+    const cooldownUntil = Math.max(keyCooldownUntil.get(index) ?? 0, rejectedKeyUntil.get(index) ?? 0)
     if (cooldownUntil <= now) {
       currentKeyIndex = (index + 1) % env.ollamaApiKeys.length
       return { key: env.ollamaApiKeys[index], index }
     }
   }
   return null
+}
+
+function allKeysRejected(): boolean {
+  const now = Date.now()
+  return env.ollamaApiKeys.length > 0 && env.ollamaApiKeys.every((_, index) => (rejectedKeyUntil.get(index) ?? 0) > now)
 }
 
 function retryAfterMs(header: string | null): number {
@@ -80,7 +86,7 @@ function applyKeyCooldown(status: number, index: number, retryAfterHeader: strin
     return delayMs
   }
   if (status === 401 || status === 403) {
-    keyCooldownUntil.set(index, Date.now() + INVALID_KEY_COOLDOWN_MS)
+    rejectedKeyUntil.set(index, Date.now() + INVALID_KEY_COOLDOWN_MS)
   }
   return undefined
 }
@@ -125,6 +131,9 @@ export async function inferWithOllama(body: InferRequestBody): Promise<InferResp
   for (let attempt = 0; attempt < env.ollamaApiKeys.length; attempt += 1) {
     const selectedKey = nextAvailableKey()
     if (!selectedKey) {
+      if (allKeysRejected()) {
+        throw new OllamaProviderError('All configured Ollama Cloud credentials were rejected', 503, false)
+      }
       const delayMs = allKeysCooldownDelayMs()
       throw new OllamaProviderError('All Ollama Cloud API keys are cooling down', 429, true, delayMs)
     }
@@ -220,6 +229,9 @@ export async function embedWithOllamaCloud(body: EmbedRequestBody): Promise<Embe
   for (let attempt = 0; attempt < env.ollamaApiKeys.length; attempt += 1) {
     const selectedKey = nextAvailableKey()
     if (!selectedKey) {
+      if (allKeysRejected()) {
+        throw new OllamaProviderError('All configured Ollama Cloud credentials were rejected', 503, false)
+      }
       const delayMs = allKeysCooldownDelayMs()
       throw new OllamaProviderError('All Ollama Cloud API keys are cooling down', 429, true, delayMs)
     }
