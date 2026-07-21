@@ -161,7 +161,7 @@ export async function inferWithOllama(body: InferRequestBody): Promise<InferResp
         await sleep(2_000 * (attempt + 1))
         continue
       }
-      throw lastError
+      break
     }
 
     const content = payload.message?.content
@@ -261,7 +261,7 @@ export async function embedWithOllamaCloud(body: EmbedRequestBody): Promise<Embe
       await sleep(2_000 * (attempt + 1))
       continue
     }
-    throw lastError
+    break
   }
 
   if (lastError?.status === 401 || lastError?.status === 403) {
