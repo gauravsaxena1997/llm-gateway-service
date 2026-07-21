@@ -23,6 +23,7 @@ interface OllamaChatResponse {
 
 interface OllamaEmbedResponse {
   embeddings?: unknown
+  error?: string
 }
 
 export class OllamaProviderError extends Error {
@@ -81,6 +82,14 @@ function resolveModel(requestedModel?: string): string {
   const model = requestedModel || env.ollamaModel
   if (!env.ollamaAllowedModels.includes(model)) {
     throw new OllamaProviderError(`Ollama model is not allowed: ${model}`, 400, false)
+  }
+  return model
+}
+
+function resolveEmbeddingModel(requestedModel?: string): string {
+  const model = requestedModel || env.ollamaEmbeddingModel
+  if (!env.ollamaEmbeddingAllowedModels.includes(model)) {
+    throw new OllamaProviderError(`Ollama embedding model is not allowed: ${model}`, 400, false)
   }
   return model
 }
@@ -164,45 +173,79 @@ export async function inferWithOllama(body: InferRequestBody): Promise<InferResp
 
 function parseEmbeddings(payload: OllamaEmbedResponse, expectedCount: number): EmbedResponse {
   if (!Array.isArray(payload.embeddings) || payload.embeddings.length !== expectedCount) {
-    throw new OllamaProviderError('Local Ollama returned an invalid embeddings response', 502, true)
+    throw new OllamaProviderError('Ollama Cloud returned an invalid embeddings response', 502, true)
   }
 
   const embeddings = payload.embeddings.map((embedding) => {
     if (!Array.isArray(embedding) || embedding.length === 0 || embedding.some((value) => typeof value !== 'number' || !Number.isFinite(value))) {
-      throw new OllamaProviderError('Local Ollama returned an invalid embedding vector', 502, true)
+      throw new OllamaProviderError('Ollama Cloud returned an invalid embedding vector', 502, true)
     }
     return embedding
   })
   const dimensions = embeddings[0].length
   if (embeddings.some((embedding) => embedding.length !== dimensions)) {
-    throw new OllamaProviderError('Local Ollama returned embeddings with inconsistent dimensions', 502, true)
+    throw new OllamaProviderError('Ollama Cloud returned embeddings with inconsistent dimensions', 502, true)
   }
 
   return { embeddings, dimensions }
 }
 
-export async function embedWithLocalOllama(body: EmbedRequestBody): Promise<EmbedResponse> {
-  const model = body.model || env.localOllamaEmbeddingModel
-  if (model !== env.localOllamaEmbeddingModel) {
-    throw new OllamaProviderError(`Local Ollama embedding model is not allowed: ${model}`, 400, false)
+export async function embedWithOllamaCloud(body: EmbedRequestBody): Promise<EmbedResponse> {
+  if (env.ollamaApiKeys.length === 0) {
+    throw new OllamaProviderError('Ollama Cloud is not configured', 503, false)
   }
 
-  logger.info({ model, inputCount: body.input.length }, 'local_ollama_embedding_started')
-  const response = await fetch(`${env.localOllamaBaseUrl}/api/embed`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, input: body.input, keep_alive: '5m' }),
-    signal: timeoutSignal(env.requestTimeoutMs),
-  })
-  const payload = (await response.json().catch(() => ({}))) as OllamaEmbedResponse & { error?: string }
-  if (!response.ok) {
-    const retryable = response.status === 429 || response.status >= 500
-    throw new OllamaProviderError(
-      `Local Ollama API error (HTTP ${response.status}): ${(payload.error || 'Unknown error').slice(0, 240)}`,
-      response.status,
-      retryable
-    )
+  const model = resolveEmbeddingModel(body.model)
+  let lastError: OllamaProviderError | null = null
+
+  for (let attempt = 0; attempt < env.ollamaApiKeys.length; attempt += 1) {
+    const selectedKey = nextAvailableKey()
+    if (!selectedKey) {
+      const delayMs = allKeysCooldownDelayMs()
+      throw new OllamaProviderError('All Ollama Cloud API keys are cooling down', 429, true, delayMs)
+    }
+
+    logger.info({ attempt, keyIndex: selectedKey.index, model, inputCount: body.input.length }, 'ollama_embedding_started')
+    try {
+      const response = await fetch(`${env.ollamaBaseUrl}/embed`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${selectedKey.key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model, input: body.input }),
+        signal: timeoutSignal(env.requestTimeoutMs),
+      })
+      const payload = (await response.json().catch(() => ({}))) as OllamaEmbedResponse
+      if (response.ok) {
+        return parseEmbeddings(payload, body.input.length)
+      }
+
+      const retryable = response.status === 429 || response.status >= 500
+      const delayMs = response.status === 429 ? retryAfterMs(response.headers.get('retry-after')) : undefined
+      if (response.status === 429 && delayMs) {
+        keyCooldownUntil.set(selectedKey.index, Date.now() + delayMs)
+      }
+      lastError = new OllamaProviderError(
+        `Ollama Cloud embedding API error (HTTP ${response.status}): ${(payload.error || 'Unknown error').slice(0, 240)}`,
+        response.status,
+        retryable,
+        delayMs
+      )
+      logger.warn({ attempt, keyIndex: selectedKey.index, model, status: response.status, retryable, retryAfterMs: delayMs }, 'ollama_embedding_failed')
+    } catch (error) {
+      if (error instanceof OllamaProviderError) throw error
+      const message = error instanceof Error ? error.message : 'Unknown request failure'
+      lastError = new OllamaProviderError(`Ollama Cloud embedding request failed: ${message.slice(0, 240)}`, 503, true)
+      logger.warn({ attempt, keyIndex: selectedKey.index, model, error: message }, 'ollama_embedding_transport_failed')
+    }
+
+    if (lastError.retryable && attempt < env.ollamaApiKeys.length - 1) {
+      await sleep(2_000 * (attempt + 1))
+      continue
+    }
+    throw lastError
   }
 
-  return parseEmbeddings(payload, body.input.length)
+  throw lastError ?? new OllamaProviderError('Ollama Cloud embedding request failed', 503, true)
 }

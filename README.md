@@ -1,6 +1,6 @@
 # llm-gateway-service
 
-Internal provider-agnostic LLM gateway for shared usage across projects.
+Internal Ollama Cloud gateway for shared usage across projects. Inference and embeddings both use the gateway-managed Ollama Cloud key pool; no application or VPS-local Ollama model is required.
 
 ## Quick start
 
@@ -30,8 +30,9 @@ GATEWAY_CLIENT_SECRET_PROJECT_B=your-secret-here
 - `GET /health/live`
 - `GET /health/ready`
 - `POST /v1/infer`
+- `POST /v1/embed`
 
-## Auth headers for `/v1/infer`
+## Auth headers for `/v1/infer` and `/v1/embed`
 
 - `x-gw-client-id` (e.g., `WEALTH_FLOW`)
 - `x-gw-timestamp` (milliseconds since epoch)
@@ -41,13 +42,24 @@ GATEWAY_CLIENT_SECRET_PROJECT_B=your-secret-here
 
 ```json
 {
-  "provider": "cerebras",
+  "provider": "ollama",
   "messages": [
     { "role": "system", "content": "You are concise." },
     { "role": "user", "content": "Say hello" }
   ],
   "maxTokens": 120,
   "temperature": 0.3
+}
+```
+
+## Embedding request body
+
+The embedding model is allowlisted and must stay identical for indexing and retrieval. Changing it requires a new vector collection and a reindex.
+
+```json
+{
+  "model": "embeddinggemma",
+  "input": ["A knowledge chunk to embed"]
 }
 ```
 # llm-gateway-service
