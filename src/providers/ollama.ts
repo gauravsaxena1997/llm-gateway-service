@@ -183,6 +183,10 @@ export async function inferWithOllama(body: InferRequestBody): Promise<InferResp
     }
   }
 
+  if (lastError?.status === 401 || lastError?.status === 403) {
+    throw new OllamaProviderError('All configured Ollama Cloud credentials were rejected', 503, false)
+  }
+
   throw lastError ?? new OllamaProviderError('Ollama provider request failed', 500, true)
 }
 
@@ -258,6 +262,10 @@ export async function embedWithOllamaCloud(body: EmbedRequestBody): Promise<Embe
       continue
     }
     throw lastError
+  }
+
+  if (lastError?.status === 401 || lastError?.status === 403) {
+    throw new OllamaProviderError('All configured Ollama Cloud credentials were rejected', 503, false)
   }
 
   throw lastError ?? new OllamaProviderError('Ollama Cloud embedding request failed', 503, true)
