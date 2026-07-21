@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
-import { embedWithOllamaCloud, OllamaProviderError } from '../providers/ollama.js'
+import { embedWithOllamaLocal, OllamaProviderError } from '../providers/ollama.js'
 
 const embedSchema = z.object({
   appId: z.string().min(1).optional(),
@@ -22,7 +22,7 @@ embedRouter.post('/embed', authMiddleware, async (req, res) => {
   }
 
   try {
-    const result = await embedWithOllamaCloud(parsed.data)
+    const result = await embedWithOllamaLocal(parsed.data)
     return res.json({
       success: true,
       requestId: req.requestId,
@@ -38,7 +38,7 @@ embedRouter.post('/embed', authMiddleware, async (req, res) => {
       requestId: req.requestId,
       error: {
         code: 'EMBEDDING_PROVIDER_ERROR',
-        message: providerError?.message || 'Ollama Cloud embedding request failed',
+        message: providerError?.message || 'Local Ollama embedding request failed',
         retryable: providerError?.retryable ?? true,
       },
     })

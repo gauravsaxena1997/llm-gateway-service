@@ -60,7 +60,7 @@ const ollamaAllowedModels = (process.env.OLLAMA_ALLOWED_MODELS || 'gemma4:31b')
   .map((model) => model.trim())
   .filter(Boolean)
 
-const ollamaEmbeddingAllowedModels = (process.env.OLLAMA_EMBEDDING_ALLOWED_MODELS || 'embeddinggemma')
+const ollamaEmbeddingAllowedModels = (process.env.OLLAMA_EMBEDDING_ALLOWED_MODELS || 'embeddinggemma:300m-qat-q8_0')
   .split(',')
   .map((model) => model.trim())
   .filter(Boolean)
@@ -80,6 +80,7 @@ export const env = {
   ollamaModel: process.env.OLLAMA_MODEL || 'gemma4:31b',
   ollamaAllowedModels,
   ollamaApiKeys,
-  ollamaEmbeddingModel: process.env.OLLAMA_EMBEDDING_MODEL || 'embeddinggemma',
+  ollamaEmbeddingModel: process.env.OLLAMA_EMBEDDING_MODEL || 'embeddinggemma:300m-qat-q8_0',
   ollamaEmbeddingAllowedModels,
+  ollamaLocalBaseUrl: (process.env.OLLAMA_LOCAL_BASE_URL || 'http://127.0.0.1:11434/api').replace(/\/$/, ''),
 } as const

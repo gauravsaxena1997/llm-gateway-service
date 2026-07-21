@@ -282,3 +282,28 @@ export async function embedWithOllamaCloud(body: EmbedRequestBody): Promise<Embe
 
   throw lastError ?? new OllamaProviderError('Ollama Cloud embedding request failed', 503, true)
 }
+
+export async function embedWithOllamaLocal(body: EmbedRequestBody): Promise<EmbedResponse> {
+  const model = resolveEmbeddingModel(body.model)
+  logger.info({ model, inputCount: body.input.length }, 'ollama_local_embedding_started')
+
+  try {
+    const response = await fetch(`${env.ollamaLocalBaseUrl}/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, input: body.input }),
+      signal: timeoutSignal(env.requestTimeoutMs),
+    })
+    const payload = (await response.json().catch(() => ({}))) as OllamaEmbedResponse
+    if (response.ok) return parseEmbeddings(payload, body.input.length)
+    throw new OllamaProviderError(
+      `Local Ollama embedding API error (HTTP ${response.status}): ${(payload.error || 'Unknown error').slice(0, 240)}`,
+      response.status,
+      response.status >= 500,
+    )
+  } catch (error) {
+    if (error instanceof OllamaProviderError) throw error
+    const message = error instanceof Error ? error.message : 'Unknown request failure'
+    throw new OllamaProviderError(`Local Ollama embedding request failed: ${message.slice(0, 240)}`, 503, true)
+  }
+}
