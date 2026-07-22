@@ -118,6 +118,10 @@ function resolveEmbeddingModel(requestedModel?: string): string {
 }
 
 export async function inferWithOllama(body: InferRequestBody): Promise<InferResponse> {
+  if (env.ollamaCloudTransport === 'local-daemon') {
+    return inferWithLocalOllama(body)
+  }
+
   if (env.ollamaApiKeys.length === 0) {
     throw new OllamaProviderError('Ollama Cloud is not configured', 503, false)
   }
@@ -149,6 +153,7 @@ export async function inferWithOllama(body: InferRequestBody): Promise<InferResp
         model,
         messages: body.messages,
         options: { temperature: body.temperature ?? 0.2 },
+        ...(body.responseFormat ? { format: body.responseFormat } : {}),
         stream: false,
       }),
       signal: timeoutSignal(requestTimeoutMs),
@@ -197,6 +202,49 @@ export async function inferWithOllama(body: InferRequestBody): Promise<InferResp
   }
 
   throw lastError ?? new OllamaProviderError('Ollama provider request failed', 500, true)
+}
+
+async function inferWithLocalOllama(body: InferRequestBody): Promise<InferResponse> {
+  const model = resolveModel(body.model)
+  const requestTimeoutMs = body.messages.some((message) => message.images?.length)
+    ? env.visionRequestTimeoutMs
+    : env.requestTimeoutMs
+
+  try {
+    const response = await fetch(`${env.ollamaLocalBaseUrl}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: body.messages,
+        options: { temperature: body.temperature ?? 0.2 },
+        ...(body.responseFormat ? { format: body.responseFormat } : {}),
+        stream: false,
+      }),
+      signal: timeoutSignal(requestTimeoutMs),
+    })
+    const payload = (await response.json().catch(() => ({}))) as OllamaChatResponse
+    if (!response.ok) {
+      throw new OllamaProviderError(
+        `Local Ollama inference error (HTTP ${response.status}): ${(payload.error || 'Unknown error').slice(0, 240)}`,
+        response.status,
+        response.status >= 500,
+      )
+    }
+    const content = payload.message?.content
+    if (!content) throw new OllamaProviderError('Local Ollama returned empty response content', 502, true)
+    const promptTokens = payload.prompt_eval_count ?? 0
+    const completionTokens = payload.eval_count ?? 0
+    return {
+      content,
+      toolCalls: [],
+      usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
+    }
+  } catch (error) {
+    if (error instanceof OllamaProviderError) throw error
+    const message = error instanceof Error ? error.message : 'Unknown request failure'
+    throw new OllamaProviderError(`Local Ollama inference request failed: ${message.slice(0, 240)}`, 503, true)
+  }
 }
 
 function parseEmbeddings(payload: OllamaEmbedResponse, expectedCount: number): EmbedResponse {

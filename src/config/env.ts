@@ -65,6 +65,12 @@ const ollamaEmbeddingAllowedModels = (process.env.OLLAMA_EMBEDDING_ALLOWED_MODEL
   .map((model) => model.trim())
   .filter(Boolean)
 
+function parseOllamaCloudTransport(value: string | undefined): 'cloud-api' | 'local-daemon' {
+  const transport = value?.trim() || 'cloud-api'
+  if (transport === 'cloud-api' || transport === 'local-daemon') return transport
+  throw new Error('Invalid OLLAMA_CLOUD_TRANSPORT. Expected cloud-api or local-daemon.')
+}
+
 export const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: Number(process.env.PORT || 4005),
@@ -83,4 +89,5 @@ export const env = {
   ollamaEmbeddingModel: process.env.OLLAMA_EMBEDDING_MODEL || 'embeddinggemma:300m-qat-q8_0',
   ollamaEmbeddingAllowedModels,
   ollamaLocalBaseUrl: (process.env.OLLAMA_LOCAL_BASE_URL || 'http://127.0.0.1:11434/api').replace(/\/$/, ''),
+  ollamaCloudTransport: parseOllamaCloudTransport(process.env.OLLAMA_CLOUD_TRANSPORT),
 } as const
