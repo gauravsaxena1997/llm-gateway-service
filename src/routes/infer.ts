@@ -1,8 +1,8 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth.js'
-import { CerebrasProviderError, inferWithCerebras } from '../providers/cerebras.js'
-import { inferWithOllama, OllamaProviderError } from '../providers/ollama.js'
+import { CerebrasProviderError, inferWithCerebras, streamWithCerebras } from '../providers/cerebras.js'
+import { inferWithOllama, OllamaProviderError, streamWithOllama } from '../providers/ollama.js'
 import { env } from '../config/env.js'
 
 const maxImageBase64Characters = 6_000_000
@@ -33,6 +33,7 @@ const inferSchema = z.object({
   maxTokens: z.number().int().positive().max(4096).optional(),
   temperature: z.number().min(0).max(2).optional(),
   metadata: z.record(z.unknown()).optional(),
+  stream: z.boolean().optional().default(false),
 }).superRefine((body, context) => {
   for (const [index, message] of body.messages.entries()) {
     if (message.images && message.role !== 'user') {
@@ -70,6 +71,29 @@ inferRouter.post('/infer', authMiddleware, async (req, res) => {
           message: `Provider not supported: ${provider}`,
         },
       })
+    }
+
+    if (body.stream) {
+      res.status(200)
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-cache, no-transform')
+      res.setHeader('Connection', 'keep-alive')
+      res.flushHeaders()
+      const write = (event: string, payload: Record<string, unknown>) => {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`)
+      }
+      try {
+        const stream = provider === 'ollama' ? streamWithOllama(body) : streamWithCerebras(body)
+        for await (const delta of stream) write('delta', { text: delta })
+        write('done', { success: true, requestId: req.requestId, appId, provider })
+        res.end()
+        return
+      } catch (streamError) {
+        const message = streamError instanceof Error ? streamError.message : 'Streaming provider failed'
+        write('error', { code: 'PROVIDER_ERROR', message })
+        res.end()
+        return
+      }
     }
 
     const result = provider === 'ollama' ? await inferWithOllama(body) : await inferWithCerebras(body)

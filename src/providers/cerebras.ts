@@ -170,3 +170,44 @@ export async function inferWithCerebras(body: InferRequestBody): Promise<InferRe
 
   throw lastError ?? new CerebrasProviderError('Cerebras provider request failed', 500, true)
 }
+
+export async function* streamWithCerebras(body: InferRequestBody): AsyncGenerator<string> {
+  const selectedKey = nextKey()
+  const model = body.model || env.cerebrasModel
+  const response = await fetch(`${env.cerebrasBaseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selectedKey.key}` },
+    body: JSON.stringify({
+      model,
+      messages: body.messages,
+      max_completion_tokens: body.maxTokens ?? 1024,
+      temperature: body.temperature ?? 0.3,
+      stream: true,
+      ...reasoningParams(model),
+    }),
+    signal: timeoutSignal(env.requestTimeoutMs),
+  })
+  if (!response.ok || !response.body) {
+    const errorBody = await response.text().catch(() => 'Unknown error')
+    throw new CerebrasProviderError(`Cerebras streaming error (HTTP ${response.status}): ${errorBody.slice(0, 240)}`, response.status, response.status >= 500 || response.status === 429)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue
+      const payload = line.slice(5).trim()
+      if (payload === '[DONE]') return
+      try {
+        const delta = JSON.parse(payload)?.choices?.[0]?.delta?.content
+        if (typeof delta === 'string' && delta) yield delta
+      } catch { /* wait for a complete SSE record */ }
+    }
+  }
+}

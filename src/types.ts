@@ -32,6 +32,7 @@ export interface InferRequestBody {
   maxTokens?: number
   temperature?: number
   metadata?: Record<string, unknown>
+  stream?: boolean
 }
 
 export interface InferUsage {

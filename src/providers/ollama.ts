@@ -152,7 +152,10 @@ export async function inferWithOllama(body: InferRequestBody): Promise<InferResp
       body: JSON.stringify({
         model,
         messages: body.messages,
-        options: { temperature: body.temperature ?? 0.2 },
+        options: {
+          temperature: body.temperature ?? 0.2,
+          ...(body.maxTokens ? { num_predict: body.maxTokens } : {}),
+        },
         ...(body.responseFormat ? { format: body.responseFormat } : {}),
         stream: false,
       }),
@@ -204,6 +207,55 @@ export async function inferWithOllama(body: InferRequestBody): Promise<InferResp
   throw lastError ?? new OllamaProviderError('Ollama provider request failed', 500, true)
 }
 
+export async function* streamWithOllama(body: InferRequestBody): AsyncGenerator<string> {
+  if (env.ollamaCloudTransport === 'local-daemon') {
+    yield* streamWithOllamaEndpoint(`${env.ollamaLocalBaseUrl}/chat`, {}, body, true)
+    return
+  }
+  const selectedKey = nextAvailableKey()
+  if (!selectedKey) throw new OllamaProviderError('No Ollama Cloud key is currently available', 429, true)
+  yield* streamWithOllamaEndpoint(env.ollamaBaseUrl + '/chat', { Authorization: `Bearer ${selectedKey.key}` }, body, false)
+}
+
+async function* streamWithOllamaEndpoint(url: string, headers: Record<string, string>, body: InferRequestBody, local: boolean): AsyncGenerator<string> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({
+      model: resolveModel(body.model),
+      messages: body.messages,
+      options: { temperature: body.temperature ?? 0.2, ...(body.maxTokens ? { num_predict: body.maxTokens } : {}) },
+      ...(body.responseFormat ? { format: body.responseFormat } : {}),
+      ...(local ? { think: false } : {}),
+      stream: true,
+    }),
+    signal: timeoutSignal(env.requestTimeoutMs),
+  })
+  if (!response.ok || !response.body) {
+    const errorBody = await response.text().catch(() => 'Unknown error')
+    throw new OllamaProviderError(`Ollama streaming error (HTTP ${response.status}): ${errorBody.slice(0, 240)}`, response.status, response.status >= 500 || response.status === 429)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const payload = JSON.parse(line) as OllamaChatResponse
+        const delta = payload.message?.content
+        if (typeof delta === 'string' && delta) yield delta
+        if (payload.done) return
+      } catch { /* wait for a complete NDJSON record */ }
+    }
+  }
+}
+
 async function inferWithLocalOllama(body: InferRequestBody): Promise<InferResponse> {
   const model = resolveModel(body.model)
   const requestTimeoutMs = body.messages.some((message) => message.images?.length)
@@ -217,8 +269,15 @@ async function inferWithLocalOllama(body: InferRequestBody): Promise<InferRespon
       body: JSON.stringify({
         model,
         messages: body.messages,
-        options: { temperature: body.temperature ?? 0.2 },
+        options: {
+          temperature: body.temperature ?? 0.2,
+          ...(body.maxTokens ? { num_predict: body.maxTokens } : {}),
+        },
         ...(body.responseFormat ? { format: body.responseFormat } : {}),
+        // qwen3.5 can consume the full completion budget in hidden reasoning
+        // and return an empty visible message. Gateway consumers request final
+        // answers, so disable thinking for the local inference path.
+        think: false,
         stream: false,
       }),
       signal: timeoutSignal(requestTimeoutMs),

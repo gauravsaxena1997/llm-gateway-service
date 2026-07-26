@@ -76,7 +76,7 @@ export const env = {
   port: Number(process.env.PORT || 4005),
   clients: parseClientsFromEnv(),
   clockSkewMs: 300000,
-  requestTimeoutMs: 30000,
+  requestTimeoutMs: Number(process.env.LLM_REQUEST_TIMEOUT_MS || 120000),
   visionRequestTimeoutMs: Number(process.env.OLLAMA_VISION_REQUEST_TIMEOUT_MS || 90000),
   providerDefault: 'ollama',
   cerebrasBaseUrl: 'https://api.cerebras.ai/v1',
