@@ -30,7 +30,7 @@ const inferSchema = z.object({
   messages: z.array(messageSchema).min(1),
   tools: z.array(toolSchema).optional(),
   responseFormat: z.record(z.unknown()).optional(),
-  maxTokens: z.number().int().positive().max(4096).optional(),
+  maxTokens: z.number().int().positive().max(16384).optional(),
   temperature: z.number().min(0).max(2).optional(),
   metadata: z.record(z.unknown()).optional(),
   stream: z.boolean().optional().default(false),

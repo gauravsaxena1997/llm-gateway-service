@@ -15,6 +15,9 @@ npm run dev
 
 Service default URL: `http://localhost:4005`
 
+Inference requests may ask for up to 16,384 output tokens. Individual providers
+may enforce a lower model-specific limit.
+
 ## Client auth configuration
 
 Provide a comma-separated list of client IDs, and a matching secret for each. Client IDs must be uppercase with underscores.
